@@ -4,6 +4,9 @@
 namespace App\Controller;
 
 
+use Lcobucci\JWT\Parser;
+use Lcobucci\JWT\Token;
+use Lcobucci\JWT\ValidationData;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -11,7 +14,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
 use Lcobucci\JWT\Builder;
 use Lcobucci\JWT\Signer\Key;
-use Lcobucci\JWT\Signer\Hmac\Sha256;
+use Lcobucci\JWT\Signer\Rsa\Sha256;
 
 class Users extends AbstractController
 {
@@ -20,7 +23,7 @@ class Users extends AbstractController
     /**
      * @Route("/api/user", name="api-main")
      */
-    public function index()
+    public function index(): JsonResponse
     {
         $obj = new \stdClass();
         $obj->api = "ready";
@@ -29,25 +32,81 @@ class Users extends AbstractController
 
 
     /**
-     * @Route("/api/register", name="register")
+     * @Route("api/token", name="check_token")
+     * @param Request $request
+     * @return bool
      */
-    public function register(Request $request)
+    public function checktoken(Request $request): JsonResponse
     {
-        //todo ici on va faire le process de register
-        /**
-         * 1 - Collecte des forms
-         * 2 - Verification Captcha
-         * 3 - Verification email
-         * 4 - Verification mot de passe
-         * 5 - Creationdu token
-         * 6 - Creation dans la base de donnée
-         * 7 - Réponse OK + json
-         * OU Réponse NOPE + Err.
-         */
-        $header = array('Access-Control-Allow-Origin *');
+        if ($request->isMethod('POST')){
+            $obj = new \stdClass();
+            $tokenStr = $request->get('token');
+            if (empty($tokenStr)){
+                $obj->state = false;
+            }else{
+                if ($this->validateToken($tokenStr)){
+                    $obj->state = $this->isTokenExpired($tokenStr);
+                }else{
+                    $obj->state = false;
+                }
+            }
+            return new JsonResponse($obj);
+        }else{
+            $obj = new \stdClass();
+            $obj->api = "ready";
+            return new JsonResponse($obj);
+        }
+    }
+
+    /**
+     * @Route("/api/login", name="login")
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function login(Request $request): JsonResponse
+    {
         if ($request->isMethod('POST')) {
             $obj = new \stdClass();
-            $obj->data = "ok";
+            $email = $request->get('email');
+            $password = $request->get('password');
+            if (empty($email) OR empty($password)) {
+                $obj->state = 1;
+                $obj->error = "Des champs sont manquants";
+            } else {
+                $em = $this->getDoctrine()->getManager();
+                $user = $em->getRepository('App:Users')->findOneBy(array('email' => $email));
+                if ($user != null) {
+                    if ($this->verif_password($password, $user->getPassword())) {
+                        $token = $this->generateJWT($email, $user->getPrenom(), $user->getNom(), $user->getRank());
+                        $user->setToken($token);
+                        $em->flush();
+                        $obj->state = 0;
+                        $obj->token = $token;
+                        $obj->redirect = "/app";
+                    } else {
+                        $obj->state = 1;
+                        $obj->error = " Identifiant ou mot de passe incorrect";
+                    }
+                } else {
+                    $obj->state = 1;
+                    $obj->error = " Identifiant ou mot de passe incorrect";
+                }
+            }
+            return new JsonResponse($obj);
+        } else {
+            $obj = new \stdClass();
+            $obj->api = "ready";
+            return new JsonResponse($obj);
+        }
+    }
+
+    /**
+     * @Route("/api/register", name="register")
+     */
+    public function register(Request $request): JsonResponse
+    {
+        if ($request->isMethod('POST')) {
+            $obj = new \stdClass();
 
             $firstName = $request->get('firstName');
             $lastName = $request->get('lastName');
@@ -55,34 +114,121 @@ class Users extends AbstractController
             $password = $request->get('password');
             $passwordConf = $request->get('passwordConf');
             $captcha = $this->captchaverify($request->get('captcha'));
-            $obj->captcha = $captcha;
-            /*$token = new \stdClass();
-            $token->email = "mineswordcraft@gmail.com";
-            $token->ip = "127.0.0.1";
-            $token->exp = time() + 3600;
-            $obj->token = base64_encode(json_encode($token));*/
-            $signer = new Sha256();
-            $time = time();
 
-            $token = (new Builder())->issuedBy('http://example.com') // Configures the issuer (iss claim)
-            ->permittedFor('http://example.org') // Configures the audience (aud claim)
-            ->identifiedBy('4f1g23a12aa', true) // Configures the id (jti claim), replicating as a header item
-            ->issuedAt($time) // Configures the time that the token was issue (iat claim)
-            ->canOnlyBeUsedAfter($time + 60) // Configures the time that the token can be used (nbf claim)
-            ->expiresAt($time + 3600) // Configures the expiration time of the token (exp claim)
-            ->withClaim('uid', 1) // Configures a new claim, called "uid"
-            ->getToken($signer, new Key('testing')); // Retrieves the generated token
+            if (empty($firstName) OR empty($lastName)
+                OR empty($email) OR empty($password)
+                OR empty($passwordConf) OR empty($captcha)) {
+                $obj->state = 1;
+                $obj->error = "Des champs sont manquants";
+            } else {
+                if ($captcha) {
+                    $em = $this->getDoctrine()->getManager();
+                    $user = $em->getRepository('App:Users')->findBy(array('email' => $email));
+                    if ($user == null) {
+                        if ($password == $passwordConf) {
+                            if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                                $crypted_pass = $this->crypt_password($password);
+                                $token = $this->generateJWT($email, $firstName, $lastName, 0);
+                                $user = new \App\Entity\Users();
+                                $user->setPrenom($firstName);
+                                $user->setNom($lastName);
+                                $user->setEmail($email);
+                                $user->setPassword($crypted_pass);
+                                $user->setRank(0);
+                                $user->setToken($token);
 
+                                $em->persist($user);
+                                $em->flush();
 
+                                $obj->state = 0;
+                                $obj->token = $token;
+                                $obj->redirect = "/app";
+                            } else {
+                                $obj->state = 1;
+                                $obj->error = "Votre adresse email ne semble pas valide";
+                            }
+                        } else {
+                            $obj->state = 1;
+                            $obj->error = "Le mot de passe et sa confirmation n'est pas identique";
+                        }
 
-
-            return new Response($token, Response::HTTP_OK);
+                    } else {
+                        $obj->state = 1;
+                        $obj->error = "L'adresse mail est déjà utilisée";
+                    }
+                } else {
+                    $obj->state = 1;
+                    $obj->error = "Verification du captcha incorrecte";
+                }
+            }
+            return new JsonResponse($obj, Response::HTTP_OK);
         } else {
-            return $this->redirectToRoute('api-main');
+            $obj = new \stdClass();
+            $obj->api = "ready";
+            return new JsonResponse($obj);
         }
 
     }
 
+    /**
+     * @param string $email
+     * @param string $fistName
+     * @param string $lastName
+     * @param int $rank
+     * @return string
+     */
+    function generateJWT(string $email, string $fistName, string $lastName, int $rank): string
+    {
+        $signer = new Sha256();
+        $private = new Key("file://../var/jwt/private.pem", "Maya666m");
+        $time = time();
+        $token = (new Builder())->issuedBy('http://api.moonly.fr')
+            ->permittedFor('http://api.moonly.fr')
+            ->identifiedBy('4f1g23a12aa', true)
+            ->issuedAt($time)
+            ->canOnlyBeUsedAfter($time)
+            ->expiresAt($time + 3600)
+            ->withClaim('email', $email)
+            ->withClaim('firstName', $fistName)
+            ->withClaim('lastName', $lastName)
+            ->withClaim('rank', $rank)
+            ->getToken($signer, $private);
+        return $token;
+    }
+
+    /**
+     * Used to convert token string to exploitable token (for check etc)
+     * @param string $token
+     * @return Token
+     */
+    function parseToken(string $token): Token
+    {
+        return (new Parser())->parse($token);
+    }
+
+    /**
+     * Check if token is valid by RSA key
+     * @param string $token
+     * @return bool
+     */
+    function validateToken(string $token): bool
+    {
+        $signer = new Sha256();
+        $jwt = $this->parseToken($token);
+        $public = new Key('file://../var/jwt/public.pem');
+       return $jwt->verify($signer, $public); //Check if signer if valid with our public key :bool
+    }
+
+    /**
+     * @param string $token
+     * @return bool
+     */
+    function isTokenExpired(string $token):bool {
+        $jwt = $this->parseToken($token);
+        $data = new ValidationData();
+        $data->setCurrentTime(time());
+        return $jwt->validate($data);
+    }
 
     function captchaverify($response): bool
     {
@@ -111,5 +257,25 @@ class Users extends AbstractController
         return (true);
 
     }
+
+    /**
+     * @param $pass
+     * @param $crypt
+     * @return true if $pass and $crypt are the same, return false if not
+     */
+    function verif_password($pass, $crypt): bool
+    {
+        return password_verify($pass, $crypt) ? TRUE : FALSE;
+    }
+
+    /**
+     * @param $pass
+     * @return String with password encoding
+     */
+    function crypt_password($pass): string
+    {
+        return password_hash($pass, PASSWORD_DEFAULT);
+    }
+
 
 }

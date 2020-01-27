@@ -22,6 +22,12 @@ class AdvertController extends AbstractController
         } else {
             //$data['txt'] = $test->getCgv();
             $obj = new \stdClass();
+            $em = $this->getDoctrine()->getManager();
+            $users = $em->getRepository('App:Users')->findAll();
+            $count = count($users);
+            $obj->user = $count;
+            $obj->project = 0;
+            $obj->subtitle = "Voter voyage commence maintenant";
             $obj->cafe = $test->getCafe();
             $obj->cgu = $test->getCgu();
             $obj->cgv = $test->getCgv();
