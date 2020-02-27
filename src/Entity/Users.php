@@ -46,6 +46,11 @@ class Users
      */
     private $token;
 
+    /**
+     * @ORM\Column(type="boolean")
+     */
+    private $premium;
+
     public function getId(): ?int
     {
         return $this->id;
@@ -119,6 +124,18 @@ class Users
     public function setToken(?string $token): self
     {
         $this->token = $token;
+
+        return $this;
+    }
+
+    public function getPremium(): ?bool
+    {
+        return $this->premium;
+    }
+
+    public function setPremium(bool $premium): self
+    {
+        $this->premium = $premium;
 
         return $this;
     }

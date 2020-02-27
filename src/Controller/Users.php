@@ -7,6 +7,7 @@ namespace App\Controller;
 use Lcobucci\JWT\Parser;
 use Lcobucci\JWT\Token;
 use Lcobucci\JWT\ValidationData;
+use Models\AuthModel;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -18,7 +19,6 @@ use Lcobucci\JWT\Signer\Rsa\Sha256;
 
 class Users extends AbstractController
 {
-
 
     /**
      * @Route("/api/user", name="api-main")
@@ -38,20 +38,23 @@ class Users extends AbstractController
      */
     public function checktoken(Request $request): JsonResponse
     {
-        if ($request->isMethod('POST')){
+        if ($request->isMethod('POST')) {
+            $auth = new AuthModel();
             $obj = new \stdClass();
             $tokenStr = $request->get('token');
-            if (empty($tokenStr)){
+            if (empty($tokenStr)) {
                 $obj->state = false;
-            }else{
-                if ($this->validateToken($tokenStr)){
-                    $obj->state = $this->isTokenExpired($tokenStr);
-                }else{
+            } else {
+                if ($auth->validateToken($tokenStr)) {
+                    $obj->state = $auth->isTokenExpired($tokenStr);
+                    $obj->profile = $auth->getGrAvatarr($tokenStr);
+                } else {
                     $obj->state = false;
                 }
             }
             return new JsonResponse($obj);
-        }else{
+        } else {
+
             $obj = new \stdClass();
             $obj->api = "ready";
             return new JsonResponse($obj);
@@ -77,12 +80,13 @@ class Users extends AbstractController
                 $user = $em->getRepository('App:Users')->findOneBy(array('email' => $email));
                 if ($user != null) {
                     if ($this->verif_password($password, $user->getPassword())) {
-                        $token = $this->generateJWT($email, $user->getPrenom(), $user->getNom(), $user->getRank());
+                        $auth = new AuthModel();
+                        $token = $auth->generateJWT($email, $user->getPrenom(), $user->getNom(), $user->getRank());
                         $user->setToken($token);
                         $em->flush();
                         $obj->state = 0;
                         $obj->token = $token;
-                        $obj->redirect = "/app";
+                        $obj->redirect = "/#/app";
                     } else {
                         $obj->state = 1;
                         $obj->error = " Identifiant ou mot de passe incorrect";
@@ -128,7 +132,8 @@ class Users extends AbstractController
                         if ($password == $passwordConf) {
                             if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
                                 $crypted_pass = $this->crypt_password($password);
-                                $token = $this->generateJWT($email, $firstName, $lastName, 0);
+                                $auth = new AuthModel();
+                                $token = $auth->generateJWT($email, $firstName, $lastName, 0);
                                 $user = new \App\Entity\Users();
                                 $user->setPrenom($firstName);
                                 $user->setNom($lastName);
@@ -136,13 +141,14 @@ class Users extends AbstractController
                                 $user->setPassword($crypted_pass);
                                 $user->setRank(0);
                                 $user->setToken($token);
+                                $user->setPremium(false);
 
                                 $em->persist($user);
                                 $em->flush();
 
                                 $obj->state = 0;
                                 $obj->token = $token;
-                                $obj->redirect = "/app";
+                                $obj->redirect = "/#/app";
                             } else {
                                 $obj->state = 1;
                                 $obj->error = "Votre adresse email ne semble pas valide";
@@ -170,65 +176,6 @@ class Users extends AbstractController
 
     }
 
-    /**
-     * @param string $email
-     * @param string $fistName
-     * @param string $lastName
-     * @param int $rank
-     * @return string
-     */
-    function generateJWT(string $email, string $fistName, string $lastName, int $rank): string
-    {
-        $signer = new Sha256();
-        $private = new Key("file://../var/jwt/private.pem", "Maya666m");
-        $time = time();
-        $token = (new Builder())->issuedBy('http://api.moonly.fr')
-            ->permittedFor('http://api.moonly.fr')
-            ->identifiedBy('4f1g23a12aa', true)
-            ->issuedAt($time)
-            ->canOnlyBeUsedAfter($time)
-            ->expiresAt($time + 3600)
-            ->withClaim('email', $email)
-            ->withClaim('firstName', $fistName)
-            ->withClaim('lastName', $lastName)
-            ->withClaim('rank', $rank)
-            ->getToken($signer, $private);
-        return $token;
-    }
-
-    /**
-     * Used to convert token string to exploitable token (for check etc)
-     * @param string $token
-     * @return Token
-     */
-    function parseToken(string $token): Token
-    {
-        return (new Parser())->parse($token);
-    }
-
-    /**
-     * Check if token is valid by RSA key
-     * @param string $token
-     * @return bool
-     */
-    function validateToken(string $token): bool
-    {
-        $signer = new Sha256();
-        $jwt = $this->parseToken($token);
-        $public = new Key('file://../var/jwt/public.pem');
-       return $jwt->verify($signer, $public); //Check if signer if valid with our public key :bool
-    }
-
-    /**
-     * @param string $token
-     * @return bool
-     */
-    function isTokenExpired(string $token):bool {
-        $jwt = $this->parseToken($token);
-        $data = new ValidationData();
-        $data->setCurrentTime(time());
-        return $jwt->validate($data);
-    }
 
     function captchaverify($response): bool
     {
@@ -265,7 +212,7 @@ class Users extends AbstractController
      */
     function verif_password($pass, $crypt): bool
     {
-        return password_verify($pass, $crypt) ? TRUE : FALSE;
+        return password_verify($pass, $crypt);
     }
 
     /**
